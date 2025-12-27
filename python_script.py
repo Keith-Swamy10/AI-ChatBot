@@ -4,7 +4,8 @@ from dotenv import load_dotenv
 # Load environment variables (OPENAI_API_KEY)
 load_dotenv()
 
-print(os.getenv("OPENAI_API_KEY"))
+AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # ---- Install required packages ----
 # !pip install -q langchain-community langchain-openai langchain-text-splitters \
@@ -13,9 +14,9 @@ print(os.getenv("OPENAI_API_KEY"))
 # ---- Imports (latest LangChain structure) ----
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
+from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 
 
 # ---------------------------------------------------
@@ -51,7 +52,12 @@ chunks = splitter.split_documents(docs)
 
 
 # Create embeddings using OpenAI
-embeddings = OpenAIEmbeddings(model="text-embedding-3-small")
+embeddings = AzureOpenAIEmbeddings(
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=OPENAI_API_KEY,
+    deployment="text-embedding-3-small",  # <-- Azure embedding deployment
+    api_version="2024-12-01-preview"
+)
 
 # Create vector store
 vector_store = FAISS.from_documents(chunks, embeddings)
@@ -62,11 +68,10 @@ retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"
 # ---------------------------------------------------
 # 2. USER QUESTION
 # ---------------------------------------------------
-question = "What are the company policies on leave?"   # <-- change later
+question ="What is the company’s dress code?"    # <-- change later
 
 retrieved_docs = retriever.invoke(question)
 context_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
-print(context_text)
 
 # ---------------------------------------------------
 # 3. LLM PROMPT (same format as your code)
@@ -91,7 +96,13 @@ final_prompt = prompt.invoke({"context": context_text, "question": question})
 # ---------------------------------------------------
 # 4. CALL LLM (same as your version)
 # ---------------------------------------------------
-llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.2)
+llm = AzureChatOpenAI(
+    azure_endpoint=AZURE_OPENAI_ENDPOINT,
+    api_key=OPENAI_API_KEY,
+    deployment_name="o3-mini",  # <-- YOUR chat deployment
+    api_version="2024-12-01-preview",
+)
+
 answer = llm.invoke(final_prompt)
 
 # ---------------------------------------------------
