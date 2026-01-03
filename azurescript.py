@@ -5,12 +5,14 @@ from dotenv import load_dotenv
 # Load environment variables (OPENAI_API_KEY)
 load_dotenv()
 
-endpoint = "https://keithopenaitokens.openai.azure.com/openai/v1"
+endpoint = os.getenv("OPENAI_API_ENDPOINT")
 deployment_name = "o3-mini"
+
+apiKey = os.getenv("OPENAI_API_KEY")
 
 client = OpenAI(
     base_url=endpoint,
-    api_key=os.getenv("OPENAI_API_KEY")
+    api_key=apiKey
 )
 
 completion = client.chat.completions.create(

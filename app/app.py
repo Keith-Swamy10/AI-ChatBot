@@ -1,5 +1,28 @@
+# from fastapi import FastAPI
+# from app.core.config import get_settings
+# from app.core.logger import get_logger
+# from app.api import chat, leads
+
+# settings = get_settings()
+# logger = get_logger()
+
+# app = FastAPI(title=settings.app_name)
+
+# # Routers
+# app.include_router(chat.router, prefix="/api", tags=["Chat"])
+# app.include_router(leads.router, prefix="/api", tags=["Leads"])
+
+# @app.get("/")
+# def root():
+#     logger.info("Root endpoint hit")
+#     return {"message": f"Welcome to {settings.app_name}!"}
+
+
 import os
 from dotenv import load_dotenv
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+from fastapi.middleware.cors import CORSMiddleware
 
 # Load environment variables (OPENAI_API_KEY)
 load_dotenv()
@@ -18,6 +41,33 @@ from langchain_community.vectorstores import FAISS
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import AzureOpenAIEmbeddings, AzureChatOpenAI
 
+if not AZURE_OPENAI_ENDPOINT or not OPENAI_API_KEY:
+    raise RuntimeError("Missing Azure OpenAI environment variables")
+
+# ---------------------------------------------------
+# FASTAPI APP
+# ---------------------------------------------------
+app = FastAPI(title="AI Chatbot Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # TEMP (lock this down later)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+
+# ---------------------------------------------------
+# REQUEST / RESPONSE MODELS
+# ---------------------------------------------------
+class ChatRequest(BaseModel):
+    message: str
+
+class ChatResponse(BaseModel):
+    answer: str
+
 
 # ---------------------------------------------------
 # 1. LOAD ALL DOCUMENTS FROM PDF FOLDER
@@ -32,7 +82,6 @@ def load_pdfs_from_folder(folder_path):
 
     return docs
 
-
 # ---------------------------------------------------
 # MAIN SCRIPT
 # ---------------------------------------------------
@@ -40,8 +89,7 @@ folder_path = "pdfs"
 docs = load_pdfs_from_folder(folder_path)
 
 if not docs:
-    print("No PDFs found in folder!")
-    exit()
+    raise RuntimeError("No PDFs found in pdfs/ folder")
 
 # Convert PDF docs into text chunks
 splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
@@ -66,15 +114,6 @@ vector_store = FAISS.from_documents(chunks, embeddings)
 retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"k": 4})
 
 # ---------------------------------------------------
-# 2. USER QUESTION
-# ---------------------------------------------------
-question ="Which acts will amount to sexual harassment?"    # <-- change later
-
-retrieved_docs = retriever.invoke(question)
-context_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
-print(context_text)
-
-# ---------------------------------------------------
 # 3. LLM PROMPT (same format as your code)
 # ---------------------------------------------------
 prompt = PromptTemplate(
@@ -91,9 +130,6 @@ Question: {question}
     input_variables=['context', 'question']
 )
 
-# Build final prompt for LLM
-final_prompt = prompt.invoke({"context": context_text, "question": question})
-
 # ---------------------------------------------------
 # 4. CALL LLM (same as your version)
 # ---------------------------------------------------
@@ -104,12 +140,30 @@ llm = AzureChatOpenAI(
     api_version="2024-12-01-preview",
 )
 
-answer = llm.invoke(final_prompt)
 
 # ---------------------------------------------------
-# 5. PRINT ANSWER
+# CHAT ENDPOINT
 # ---------------------------------------------------
-print("\n========== ANSWER ==========")
-print(answer.content)
-print("End")
-print("============================\n")
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest):
+    user_question = request.message.strip()
+
+    if not user_question:
+        raise HTTPException(status_code=400, detail="Empty question")
+
+    # 1. Retrieve relevant docs
+    retrieved_docs = retriever.invoke(user_question)
+    context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+
+    # 2. Build prompt
+    final_prompt = prompt.invoke({
+        "context": context_text,
+        "question": user_question
+    })
+
+    # 3. Call LLM
+    try:
+        response = llm.invoke(final_prompt)
+        return ChatResponse(answer=response.content)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

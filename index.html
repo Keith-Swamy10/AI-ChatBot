@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Document</title>
+</head>
+
+<body>
+    <main>
+        <h1>Hello world</h1>
+
+        <script data-api-url="http://localhost:8000/chat" data-public-key="pk_live_123">
+            (function () {
+                console.log("Hello world");
+                const script = document.currentScript;
+                const API_URL = script.dataset.apiUrl;
+                const PUBLIC_KEY = script.dataset.publicKey;
+
+                //   if (!API_URL || !PUBLIC_KEY) {
+                //     console.error("Chat widget: api-url or public-key missing");
+                //     return;
+                //   }
+
+                /* ------------------ Styles ------------------ */
+                const style = document.createElement("style");
+                style.innerHTML = `
+                #chat-btn {
+                    position: fixed;
+                    bottom: 24px;
+                    right: 24px;
+                    width: 56px;
+                    height: 56px;
+                    border-radius: 50%;
+                    background: #3276EA;
+                    color: white;
+                    border: none;
+                    cursor: pointer;
+                    font-size: 24px;
+                    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+                    z-index: 9999;
+                }
+
+                #chat-panel {
+                    position: fixed;
+                    top: 7.5vh;
+                    right: 24px;
+                    width: 360px;
+                    height: 85vh;
+                    background: #fff;
+                    border-radius: 12px;
+                    box-shadow: 0 8px 24px rgba(0,0,0,0.2);
+                    display: none;
+                    flex-direction: column;
+                    z-index: 9999;
+                    font-family: Arial, sans-serif;
+                }
+
+                #chat-header {
+                    padding: 12px;
+                    background: #3276EA;
+                    color: white;
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    border-top-left-radius: 12px;
+                    border-top-right-radius: 12px;
+                }
+
+                #chat-messages {
+                    flex: 1;
+                    padding: 12px;
+                    overflow-y: auto;
+                    background: #f7f7f7;
+                }
+
+                .msg {
+                    margin-bottom: 8px;
+                    padding: 8px 10px;
+                    border-radius: 8px;
+                    max-width: 80%;
+                    font-size: 14px;
+                    line-height: 1.4;
+                }
+
+                .user {
+                    background: #3276EA;
+                    color: white;
+                    margin-left: auto;
+                }
+
+                .bot {
+                    background: #e0e0e0;
+                    color: #000;
+                    margin-right: auto;
+                }
+
+                #chat-input-area {
+                    display: flex;
+                    padding: 8px;
+                    border-top: 1px solid #ddd;
+                }
+
+                #chat-input {
+                    flex: 1;
+                    padding: 8px;
+                    font-size: 14px;
+                }
+
+                #send-btn {
+                    margin-left: 6px;
+                    padding: 8px 12px;
+                    background: #3276EA;
+                    color: white;
+                    border: none;
+                    cursor: pointer;
+                }
+
+                #clear-btn {
+                    background: transparent;
+                    border: none;
+                    color: white;
+                    cursor: pointer;
+                    font-size: 12px;
+                }
+
+                /* -------- Typing Indicator -------- */
+                .typing {
+                display: flex;
+                gap: 4px;
+                padding: 6px 10px;
+                background: #e0e0e0;
+                border-radius: 8px;
+                width: fit-content;
+                margin-bottom: 8px;
+                }
+
+                .typing span {
+                width: 6px;
+                height: 6px;
+                background: #555;
+                border-radius: 50%;
+                animation: blink 1.4s infinite both;
+                }
+
+                .typing span:nth-child(2) {
+                animation-delay: 0.2s;
+                }
+
+                .typing span:nth-child(3) {
+                animation-delay: 0.4s;
+                }
+
+                @keyframes blink {
+                0% { opacity: 0.2; }
+                20% { opacity: 1; }
+                100% { opacity: 0.2; }
+                }
+
+                `;
+
+                document.head.appendChild(style);
+
+                /* ------------------ UI ------------------ */
+                const chatBtn = document.createElement("button");
+                chatBtn.id = "chat-btn";
+                chatBtn.innerHTML = "💬";
+
+                const panel = document.createElement("div");
+                panel.id = "chat-panel";
+                panel.innerHTML = `
+        <div id="chat-header">
+          <span>Chat</span>
+          <button id="clear-btn">New</button>
+        </div>
+        <div id="chat-messages"></div>
+        <div id="chat-input-area">
+          <input id="chat-input" placeholder="Type a message..." />
+          <button id="send-btn">Send</button>
+        </div>
+      `;
+
+                document.body.appendChild(chatBtn);
+                document.body.appendChild(panel);
+
+                const messagesDiv = panel.querySelector("#chat-messages");
+                const input = panel.querySelector("#chat-input");
+
+                let conversation = []; // IN-MEMORY ONLY
+
+                /* ------------------ Helpers ------------------ */
+                function addMessage(text, sender) {
+                    const msg = document.createElement("div");
+                    msg.className = `msg ${sender}`;
+                    msg.innerText = text;
+                    messagesDiv.appendChild(msg);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                }
+
+                function clearConversation() {
+                    conversation = [];
+                    messagesDiv.innerHTML = "";
+                }
+
+                /* ------------------ Events ------------------ */
+                chatBtn.onclick = () => {
+                    panel.style.display = panel.style.display === "flex" ? "none" : "flex";
+                };
+
+                panel.querySelector("#clear-btn").onclick = () => {
+                    clearConversation();
+                };
+
+                panel.querySelector("#send-btn").onclick = sendMessage;
+
+                input.addEventListener("keydown", (e) => {
+                    if (e.key === "Enter") sendMessage();
+                });
+
+                async function sendMessage() {
+                    const text = input.value.trim();
+                    if (!text) return;
+
+                    input.value = "";
+                    addMessage(text, "user");
+
+                    showTyping();
+
+                    try {
+                        const res = await fetch(API_URL, {
+                            method: "POST",
+                            headers: {
+                                "Content-Type": "application/json",
+                                "X-Public-Key": PUBLIC_KEY
+                            },
+                            body: JSON.stringify({ message: text })
+                        });
+
+                        const data = await res.json();
+                        hideTyping();
+
+                        const reply = data.answer || "No response";
+                        addMessage(reply, "bot");
+
+                    } catch (err) {
+                        hideTyping();
+                        addMessage("Error connecting to server", "bot");
+                    }
+                }
+
+
+
+                let typingEl = null;
+
+                function showTyping() {
+                    typingEl = document.createElement("div");
+                    typingEl.className = "typing bot";
+                    typingEl.innerHTML = `
+            <span></span>
+            <span></span>
+            <span></span>
+        `;
+                    messagesDiv.appendChild(typingEl);
+                    messagesDiv.scrollTop = messagesDiv.scrollHeight;
+                }
+
+                function hideTyping() {
+                    if (typingEl) {
+                        typingEl.remove();
+                        typingEl = null;
+                    }
+                }
+
+
+
+            })();
+
+        </script>
+    </main>
+</body>
+
+</html>
