@@ -190,6 +190,15 @@
                 let conversation = []; // IN-MEMORY ONLY
 
                 /* ------------------ Helpers ------------------ */
+                function getSessionId() {
+                    let sessionId = localStorage.getItem("session_id");
+                    if (!sessionId) {
+                        sessionId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                        localStorage.setItem("session_id", sessionId);
+                    }
+                    return sessionId;
+                }
+
                 function addMessage(text, sender) {
                     const msg = document.createElement("div");
                     msg.className = `msg ${sender}`;
@@ -228,13 +237,14 @@
                     showTyping();
 
                     try {
+                        const sessionId = getSessionId();
                         const res = await fetch(API_URL, {
                             method: "POST",
                             headers: {
                                 "Content-Type": "application/json",
                                 "X-Public-Key": PUBLIC_KEY
                             },
-                            body: JSON.stringify({ message: text })
+                            body: JSON.stringify({ message: text, session_id: sessionId })
                         });
 
                         const data = await res.json();
