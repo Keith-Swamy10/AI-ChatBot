@@ -2,3 +2,5 @@
 app/__pycache__/
 pdfs/.DS_Store
 .DS_Store
+*.json
+__pycache__/

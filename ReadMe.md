@@ -81,3 +81,47 @@ Prepare for eventual scaling (Gunicorn + Uvicorn).
 ├── .env                     # API keys, secrets
 ├── requirements.txt
 └── README.md
+
+///
+I won’t sugarcoat.
+
+❌ 1. Credentials in code
+
+This is a must-fix.
+
+❌ 2. No session expiration
+
+Sessions live forever.
+DB will grow endlessly.
+
+❌ 3. Chat order bug
+
+Chats are reversed for LLM context.
+
+❌ 4. Prompt doing business logic
+
+Lead capture should be state-driven, not prompt-driven.
+
+❌ 5. FAISS rebuilt at startup (again)
+
+Same scaling issue as before.
+///
+
+CREATE TABLE leads (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    session_id VARCHAR(255) NOT NULL,
+    name VARCHAR(255),
+    email VARCHAR(255),
+    phone VARCHAR(50),
+    intent_summary TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+
+    UNIQUE KEY unique_email (email),
+    UNIQUE KEY unique_phone (phone)
+);
+
+CREATE TABLE lead_states (
+    session_id VARCHAR(255) PRIMARY KEY,
+    current_step VARCHAR(50) NOT NULL,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

@@ -7,6 +7,31 @@ import mysql.connector
 from mysql.connector import Error
 from datetime import datetime
 
+from fastapi import BackgroundTasks
+from app.leads.lead_state_service import get_or_create_lead_state
+
+from app.leads.lead_state_service import (
+    should_start_lead_flow,
+    next_lead_question,
+)
+
+from app.leads.lead_extractor import process_lead_input
+from app.integrations.google_sheets import append_lead_to_sheet
+
+def fetch_lead_by_session(session_id: str):
+    conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute(
+        "SELECT * FROM leads WHERE session_id = %s",
+        (session_id,)
+    )
+    lead = cursor.fetchone()
+
+    cursor.close()
+    conn.close()
+    return lead
+
 # Load environment variables (OPENAI_API_KEY)
 load_dotenv()
 
@@ -163,10 +188,26 @@ retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"
 prompt = PromptTemplate(
     template="""
 You are a helpful company assistant.
-Answer ONLY using the provided PDF context and previous chats.
-If the context and previous chats are insufficient, reply: "I don't know."
-Also, If you feel the conversation have ended then ask for the email id and phone number from user (Note: Only ask user for the email id and phone number when you feel that the user is satisfied and has no more questions). Also ask the followup similar questions by using your creativity which can be engaging for user based on context.
-If user is asking question related to previous conversations then try to answer using the previous chats.
+
+You must strictly follow backend instructions.
+
+CURRENT_LEAD_STEP: {lead_step}
+
+Rules:
+- If CURRENT_LEAD_STEP is ASK_NAME:
+  Ask the user politely for their name.
+- If CURRENT_LEAD_STEP is ASK_EMAIL:
+  Ask the user politely for their email address.
+- If CURRENT_LEAD_STEP is ASK_PHONE:
+  Ask the user politely for their phone number.
+- If CURRENT_LEAD_STEP is NONE or COMPLETED:
+  Answer the user's question using ONLY the provided context and previous chats.
+
+Important:
+- Do NOT ask for multiple details at once.
+- Do NOT change the order.
+- Do NOT validate inputs yourself.
+- Do NOT mention lead collection explicitly.
 
 Context:
 {context}
@@ -174,9 +215,10 @@ Context:
 Previous Chats:
 {previous_20}
 
-Question: {question}
+User Question:
+{question}
 """,
-    input_variables=['context', 'question', 'previous_20']
+    input_variables=["context", "question", "previous_20", "lead_step"]
 )
 
 # Define the prompt template
@@ -315,3 +357,64 @@ def predict_intent_api(session_id: str):
         return {"intent_summary": response.content}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(request: ChatRequest, background_tasks: BackgroundTasks):
+    user_question = request.message.strip()
+
+    if not user_question:
+        raise HTTPException(status_code=400, detail="Empty question")
+
+    save_chat(request.session_id, user_question, "user")
+
+    # --------------------------------------
+    # 1. LEAD INPUT PROCESSING (validation)
+    # --------------------------------------
+    lead_result = process_lead_input(
+        request.session_id,
+        user_question
+    )
+
+    if lead_result["handled"]:
+        if lead_result["lead_completed"]:
+            lead = fetch_lead_by_session(request.session_id)
+
+            try:
+                intent_response = predict_intent_api(request.session_id)
+                lead["intent_summary"] = intent_response["intent_summary"]
+            except Exception:
+                lead["intent_summary"] = None
+
+            background_tasks.add_task(
+                append_lead_to_sheet,
+                lead
+            )
+
+        return ChatResponse(answer=lead_result["message"])
+
+    # --------------------------------------
+    # 2. NORMAL CHAT / PROMPT-DRIVEN ASKING
+    # --------------------------------------
+    previous_chats = retrieve_chats(request.session_id, 20)
+    previous_chat_context = "\n".join(
+        f"{chat['sender']}: {chat['message']}"
+        for chat in reversed(previous_chats)
+    )
+
+    retrieved_docs = retriever.invoke(user_question)
+    context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+
+    lead_step = get_or_create_lead_state(request.session_id)
+
+    final_prompt = prompt.invoke({
+        "context": context_text,
+        "question": user_question,
+        "previous_20": previous_chat_context,
+        "lead_step": lead_step
+    })
+
+    response = llm.invoke(final_prompt)
+    ai_response = response.content
+
+    save_chat(request.session_id, ai_response, "ai")
+    return ChatResponse(answer=ai_response)
