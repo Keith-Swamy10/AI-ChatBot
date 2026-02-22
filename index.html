@@ -212,6 +212,11 @@
                     messagesDiv.innerHTML = "";
                 }
 
+                function resetSession() {
+                    localStorage.removeItem("session_id");
+                    getSessionId();
+                }
+
                 /* ------------------ Events ------------------ */
                 chatBtn.onclick = () => {
                     panel.style.display = panel.style.display === "flex" ? "none" : "flex";
@@ -219,6 +224,7 @@
 
                 panel.querySelector("#clear-btn").onclick = () => {
                     clearConversation();
+                    resetSession();
                 };
 
                 panel.querySelector("#send-btn").onclick = sendMessage;

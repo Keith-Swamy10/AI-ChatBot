@@ -5,6 +5,8 @@ import pymysql
 from app.utils.validators import is_valid_email, is_valid_indian_phone
 from app.core.config import get_settings
 
+INTENT_SUMMARY_MAX_LEN = 500
+
 
 # ----------------------------------------
 # DB CONNECTION
@@ -189,35 +191,120 @@ def detect_opportunistic_contact(user_message: str) -> bool:
     text = user_message.strip()
     return is_valid_email(text) or is_valid_indian_phone(text)
 
+def get_conversation_summary(session_id: str) -> str:
+    """
+    Build a concise intent summary from user conversation.
+    """
+    messages = get_conversation_messages(session_id)
+    if not messages:
+        return ""
+
+    user_msgs = [
+        msg.strip()
+        for sender, msg in messages
+        if str(sender).lower() == "user" and msg and msg.strip()
+    ]
+    if not user_msgs:
+        return ""
+
+    parts = []
+    detected_topics = extract_lead_topics(" ".join(user_msgs))
+    if detected_topics:
+        parts.append(f"User intent: interested in {', '.join(detected_topics)}")
+    else:
+        parts.append("User intent: seeking information and support")
+
+    parts.append(f"Engagement: {len(user_msgs)} user message(s)")
+
+    question_count = sum(1 for msg in user_msgs if "?" in msg)
+    if question_count:
+        parts.append(f"Questioning behavior: asked {question_count} question(s)")
+
+    if any(detect_opportunistic_contact(msg) for msg in user_msgs):
+        parts.append("Contact signal: user shared direct contact details")
+
+    latest_need = shorten_text(user_msgs[-1], 120)
+    parts.append(f"Latest user need: {latest_need}")
+
+    return shorten_text(" | ".join(parts), INTENT_SUMMARY_MAX_LEN)
+
+
+def get_conversation_messages(session_id: str):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    cursor.execute(
+        """
+        SELECT sender, message FROM chats
+        WHERE session_id = %s
+        ORDER BY id ASC
+        """,
+        (session_id,)
+    )
+    messages = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return messages
+
+
+def shorten_text(text: str, max_len: int) -> str:
+    if len(text) <= max_len:
+        return text
+
+    marker = " ..."
+    if max_len <= len(marker) + 1:
+        return text[:max_len]
+
+    return text[: max_len - len(marker)].rstrip() + marker
+
+
+def extract_lead_topics(text: str):
+    text_lower = text.lower()
+    topics = []
+
+    for topic in LEAD_SIGNALS:
+        if topic in text_lower and topic not in topics:
+            topics.append(topic)
+
+    # Keep summary compact and stable.
+    return topics[:5]
+
 # ----------------------------------------
 # STORE INTENT SUMMARY
 # ----------------------------------------
 def store_intent_summary(session_id: str, intent_message: str):
     """
     Store the user's initial intent when lead flow starts.
-    Only stores if not already set (to avoid overwriting).
+    Includes the trigger message + conversation context.
+    Updates existing summary so context is not stale.
     """
     conn = get_db_connection()
     cursor = conn.cursor()
 
-    # Check if intent_summary already exists
+    # Check existing lead row
     cursor.execute(
         "SELECT intent_summary FROM leads WHERE session_id = %s",
         (session_id,)
     )
     row = cursor.fetchone()
     
-    # Only update if intent_summary is NULL
+    # Build intent summary with conversation context
+    conversation = get_conversation_summary(session_id)
+    if conversation:
+        full_intent = f"Trigger: {intent_message} | {conversation}"
+    else:
+        full_intent = f"Trigger: {intent_message}"
+    
+    # Insert or update so summary keeps improving over the session.
     if row:
-        if row[0] is None:
-            cursor.execute(
-                """
-                UPDATE leads
-                SET intent_summary = %s
-                WHERE session_id = %s
-                """,
-                (intent_message[:200], session_id)
-            )
+        cursor.execute(
+            """
+            UPDATE leads
+            SET intent_summary = %s
+            WHERE session_id = %s
+            """,
+            (full_intent[:INTENT_SUMMARY_MAX_LEN], session_id)
+        )
     else:
         # Insert new record with intent
         cursor.execute(
@@ -225,10 +312,51 @@ def store_intent_summary(session_id: str, intent_message: str):
             INSERT INTO leads (session_id, intent_summary, created_at)
             VALUES (%s, %s, %s)
             """,
-            (session_id, intent_message[:200], datetime.utcnow())
+            (session_id, full_intent[:INTENT_SUMMARY_MAX_LEN], datetime.utcnow())
         )
 
     conn.commit()
     cursor.close()
     conn.close()
+
+
+def refresh_intent_summary_from_conversation(session_id: str):
+    """
+    Recompute intent summary from the full conversation and upsert it.
+    Use this before final lead export to capture the whole chat.
+    """
+    conversation = get_conversation_summary(session_id)
+    if not conversation:
+        return
+
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            "SELECT id FROM leads WHERE session_id = %s",
+            (session_id,)
+        )
+        row = cursor.fetchone()
+
+        if row:
+            cursor.execute(
+                """
+                UPDATE leads
+                SET intent_summary = %s
+                WHERE session_id = %s
+                """,
+                (conversation[:INTENT_SUMMARY_MAX_LEN], session_id)
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO leads (session_id, intent_summary, created_at)
+                VALUES (%s, %s, %s)
+                """,
+                (session_id, conversation[:INTENT_SUMMARY_MAX_LEN], datetime.utcnow())
+            )
+        conn.commit()
+    finally:
+        cursor.close()
+        conn.close()
 

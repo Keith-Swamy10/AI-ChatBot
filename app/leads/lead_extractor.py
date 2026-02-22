@@ -2,15 +2,12 @@ from datetime import datetime
 from typing import Optional, Dict
 import pymysql
 
-from app.utils.validators import (
-    is_valid_email,
-    is_valid_indian_phone,
-    is_valid_name
-)
+from app.utils.validators import is_valid_email, is_valid_indian_phone, is_valid_name, normalize_indian_phone
 
 from app.leads.lead_state_service import (
     get_or_create_lead_state,
-    update_lead_state
+    update_lead_state,
+    refresh_intent_summary_from_conversation
 )
 
 from app.core.config import get_settings
@@ -66,6 +63,10 @@ def get_lead_by_session_id(session_id: str) -> Optional[Dict]:
 # SAVE / UPDATE LEAD FIELD
 # ----------------------------------------
 def upsert_lead_field(session_id: str, field: str, value: str):
+    allowed_fields = {"name", "email", "phone", "intent_summary"}
+    if field not in allowed_fields:
+        raise ValueError(f"Invalid lead field: {field}")
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -103,6 +104,7 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
 
     state = get_or_create_lead_state(session_id)
     text = user_message.strip()
+    is_casual = is_casual_message(text)
 
     extracted = extract_contact_fields(text)
 
@@ -123,13 +125,25 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
 
     # ASK NAME
     if state == "ASKED_NAME":
+        if is_casual:
+            return {
+                "handled": False,
+                "message": None,
+                "lead_completed": False
+            }
+
         if extracted["name"]:
             # User provided name
             upsert_lead_field(session_id, "name", extracted["name"])
 
-            # Check what else we have
-            if extracted["email"] and extracted["phone"]:
+            # Check what else we already have in DB (not just this message)
+            lead_data = get_lead_by_session_id(session_id) or {}
+            has_email = bool(lead_data.get("email"))
+            has_phone = bool(lead_data.get("phone"))
+
+            if has_email and has_phone:
                 update_lead_state(session_id, "COMPLETED")
+                refresh_intent_summary_from_conversation(session_id)
                 lead_data = get_lead_by_session_id(session_id)
                 if lead_data:
                     try:
@@ -141,7 +155,7 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
                     "message": "Thank you! Our team will reach out to you shortly!",
                     "lead_completed": True
                 }
-            elif extracted["email"]:
+            elif has_email:
                 update_lead_state(session_id, "ASKED_PHONE")
                 return {
                     "handled": True,
@@ -193,8 +207,10 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
         if extracted["email"]:
             upsert_lead_field(session_id, "email", extracted["email"])
 
-            if extracted["phone"]:
+            lead_data = get_lead_by_session_id(session_id) or {}
+            if lead_data.get("phone"):
                 update_lead_state(session_id, "COMPLETED")
+                refresh_intent_summary_from_conversation(session_id)
                 
                 # Get full lead data and push to Google Sheets
                 lead_data = get_lead_by_session_id(session_id)
@@ -226,6 +242,13 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
                 "lead_completed": False
             }
 
+        elif is_casual:
+            return {
+                "handled": False,
+                "message": None,
+                "lead_completed": False
+            }
+
         else:
             return {
                 "handled": True,
@@ -238,6 +261,7 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
         if extracted["phone"]:
             upsert_lead_field(session_id, "phone", extracted["phone"])
             update_lead_state(session_id, "COMPLETED")
+            refresh_intent_summary_from_conversation(session_id)
 
             # Get full lead data and push to Google Sheets
             lead_data = get_lead_by_session_id(session_id)
@@ -253,6 +277,13 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
                 "lead_completed": True
             }
 
+        if is_casual:
+            return {
+                "handled": False,
+                "message": None,
+                "lead_completed": False
+            }
+
         return {
             "handled": True,
             "message": "Please enter a valid 10-digit Indian phone number.",
@@ -266,8 +297,40 @@ def process_lead_input(session_id: str, user_message: str) -> Dict:
     }
 
 def extract_contact_fields(text: str):
+    name_candidate = extract_name_candidate(text)
+    normalized_phone = None
+
+    if is_valid_indian_phone(text):
+        try:
+            normalized_phone = normalize_indian_phone(text)
+        except ValueError:
+            normalized_phone = None
+
     return {
         "email": text if is_valid_email(text) else None,
-        "phone": text if is_valid_indian_phone(text) else None,
-        "name": text if is_valid_name(text) else None
+        "phone": normalized_phone,
+        "name": name_candidate
     }
+
+
+def extract_name_candidate(text: str) -> Optional[str]:
+    cleaned = text.strip()
+    lowered = cleaned.lower()
+
+    prefixes = ["my name is ", "i am ", "i'm ", "this is "]
+    for prefix in prefixes:
+        if lowered.startswith(prefix):
+            candidate = cleaned[len(prefix):].strip(" .,!?:;")
+            return candidate if is_valid_name(candidate) else None
+
+    return cleaned if is_valid_name(cleaned) else None
+
+
+def is_casual_message(text: str) -> bool:
+    lowered = text.lower().strip()
+    casual = {
+        "hi", "hello", "hey", "yo", "hii",
+        "ok", "okay", "sure", "hmm", "hmmm",
+        "thanks", "thank you", "cool", "fine"
+    }
+    return lowered in casual
