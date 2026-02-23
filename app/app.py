@@ -75,6 +75,26 @@ def save_chat_message(session_id: str, message: str, sender: str):
         conn.close()
 
 
+def retrieve_chats(session_id: str, limit: int = 20):
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT message, sender FROM chats
+            WHERE session_id = %s
+            ORDER BY id DESC
+            LIMIT %s
+            """,
+            (session_id, limit)
+        )
+        rows = cursor.fetchall()
+        return [{"message": row[0], "sender": row[1]} for row in rows]
+    finally:
+        cursor.close()
+        conn.close()
+
+
 def append_name_request(answer: str) -> str:
     prompt = "Before we continue, may I know your name?"
     if not answer:
@@ -195,12 +215,10 @@ def chat(request: ChatRequest):
         current_state = get_or_create_lead_state(session_id)
         print(f"[LEAD] Current state: {current_state}")
         
-        # If we have a strong signal and are in COMPLETED state, reset to ask for name again
-        if has_strong_signal and current_state == "COMPLETED":
-            print(f"[LEAD] Strong signal detected in COMPLETED state - resetting to ASKED_NAME")
-            update_lead_state(session_id, "ASKED_NAME")
-            # Don't store new intent - original intent is already saved
-            current_state = "ASKED_NAME"
+        # If lead is already completed, don't restart the flow
+        if current_state == "COMPLETED":
+            print(f"[LEAD] Lead already completed - skipping lead flow")
+            # Fall through directly to Azure/PDF chat
 
         # ===================================
         # 1. CHECK LEAD STATE
@@ -256,24 +274,51 @@ def chat(request: ChatRequest):
             retrieved_docs = retriever.invoke(user_message)
             context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
-            prompt = PromptTemplate(
+            # Get previous chat history
+            previous_chats = retrieve_chats(session_id, 20)
+            previous_chat_context = "\n".join(
+                f"{chat['sender']}: {chat['message']}"
+                for chat in reversed(previous_chats)
+            )
+
+            lead_step = get_or_create_lead_state(session_id)
+
+            chat_prompt = PromptTemplate(
                 template="""
-You are a helpful company assistant.
-Answer the user's question using ONLY the provided context.
-If the context doesn't contain relevant information, say "I don't have that information in my knowledge base."
-Be friendly and helpful.
+You are a helpful company assistant that answers user questions based on the provided context.
+
+CURRENT_LEAD_STEP: {lead_step}
+
+Guidelines:
+- If CURRENT_LEAD_STEP is ASK_NAME:
+  Politely ask the user for their name.
+- If CURRENT_LEAD_STEP is ASK_EMAIL:
+  Politely ask the user for their email address.
+- If CURRENT_LEAD_STEP is ASK_PHONE:
+  Politely ask the user for their phone number.
+- If CURRENT_LEAD_STEP is NONE or COMPLETED:
+  Answer the user's question using the provided context and previous chats.
+
+Please ask for only one detail at a time and follow the order above.
+Please avoid mentioning lead collection to the user.
 
 Context:
 {context}
 
-Question: {question}
+Previous Chats:
+{previous_20}
+
+User Question:
+{question}
 """,
-                input_variables=['context', 'question']
+                input_variables=["context", "question", "previous_20", "lead_step"]
             )
 
-            final_prompt = prompt.invoke({
+            final_prompt = chat_prompt.invoke({
                 "context": context_text,
-                "question": user_message
+                "question": user_message,
+                "previous_20": previous_chat_context,
+                "lead_step": lead_step
             })
 
             response = llm.invoke(final_prompt)
