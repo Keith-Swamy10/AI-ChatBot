@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, APIRouter
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 import mysql.connector
@@ -37,6 +38,11 @@ load_dotenv()
 
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+DB_HOSTNAME = os.getenv("DB_HOSTNAME")
+DB_USERNAME = os.getenv("DB_USERNAME")
+DB_DATABASENAME = os.getenv("DB_DATABASENAME")
+DB_PASSWORD = os.getenv("DB_PASSWORD")
+
 
 # ---- Install required packages ----
 # !pip install -q langchain-community langchain-openai langchain-text-splitters \
@@ -72,10 +78,10 @@ app.add_middleware(
 def get_db_connection():
     try:
         connection = mysql.connector.connect(
-            host="localhost",  # Update with your MySQL host
-            user="root",       # Update with your MySQL username
-            password="Saket@123",  # Update with your MySQL password
-            database="chatbot_db"  # Update with your database name
+            host=DB_HOSTNAME,  # Update with your MySQL host
+            user=DB_USERNAME,       # Update with your MySQL username
+            password=DB_PASSWORD,  # Update with your MySQL password
+            database=DB_DATABASENAME  # Update with your database name
         )
         return connection
     except Error as e:
@@ -153,10 +159,10 @@ def load_htmls_from_folder(folder_path):
 # ---------------------------------------------------
 # MAIN SCRIPT
 # ---------------------------------------------------
-# folder_path = "pdfs" 
-# docs = load_pdfs_from_folder(folder_path)
-folder_path = "./data/index_pages_dir"
-docs = load_htmls_from_folder(folder_path)
+folder_path = "pdfs" 
+docs = load_pdfs_from_folder(folder_path)
+# folder_path = "./data/index_pages_dir"
+# docs = load_htmls_from_folder(folder_path)
 
 if not docs:
     raise RuntimeError("No PDFs found in pdfs/ folder")
@@ -187,27 +193,22 @@ retriever = vector_store.as_retriever(search_type="similarity", search_kwargs={"
 # ---------------------------------------------------
 prompt = PromptTemplate(
     template="""
-You are a helpful company assistant.
-
-You must strictly follow backend instructions.
+You are a helpful company assistant that answers user questions based on the provided context.
 
 CURRENT_LEAD_STEP: {lead_step}
 
-Rules:
+Guidelines:
 - If CURRENT_LEAD_STEP is ASK_NAME:
-  Ask the user politely for their name.
+  Politely ask the user for their name.
 - If CURRENT_LEAD_STEP is ASK_EMAIL:
-  Ask the user politely for their email address.
+  Politely ask the user for their email address.
 - If CURRENT_LEAD_STEP is ASK_PHONE:
-  Ask the user politely for their phone number.
+  Politely ask the user for their phone number.
 - If CURRENT_LEAD_STEP is NONE or COMPLETED:
-  Answer the user's question using ONLY the provided context and previous chats.
+  Answer the user's question using the provided context and previous chats.
 
-Important:
-- Do NOT ask for multiple details at once.
-- Do NOT change the order.
-- Do NOT validate inputs yourself.
-- Do NOT mention lead collection explicitly.
+Please ask for only one detail at a time and follow the order above.
+Please avoid mentioning lead collection to the user.
 
 Context:
 {context}
@@ -287,44 +288,46 @@ llm = AzureChatOpenAI(
 # ---------------------------------------------------
 # CHAT ENDPOINT
 # ---------------------------------------------------
-@app.post("/chat", response_model=ChatResponse)
-def chat(request: ChatRequest):
-    user_question = request.message.strip()
+# @app.post("/chat", response_model=ChatResponse)
+# def chat(request: ChatRequest):
+#     user_question = request.message.strip()
 
-    if not user_question:
-        raise HTTPException(status_code=400, detail="Empty question")
+#     if not user_question:
+#         raise HTTPException(status_code=400, detail="Empty question")
 
-    # Save user question
-    save_chat(request.session_id, user_question, "user")
+#     # Save user question
+#     save_chat(request.session_id, user_question, "user")
 
-    # Retrieve last 10 chats
-    previous_chats = retrieve_chats(request.session_id, 20)
-    previous_chat_context = "\n".join(
-        f"{chat['sender']}: {chat['message']}" for chat in previous_chats
-    )
-    print(previous_chat_context)
-    # 1. Retrieve relevant docs
-    retrieved_docs = retriever.invoke(user_question)
-    context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
+#     # Retrieve last 10 chats
+#     previous_chats = retrieve_chats(request.session_id, 20)
+#     previous_chat_context = "\n".join(
+#         f"{chat['sender']}: {chat['message']}" for chat in previous_chats
+#     )
+#     print(previous_chat_context)
+#     # 1. Retrieve relevant docs
+#     retrieved_docs = retriever.invoke(user_question)
+#     context_text = "\n\n".join(doc.page_content for doc in retrieved_docs)
 
-    # 2. Build prompt
-    final_prompt = prompt.invoke({
-        "context": context_text,
-        "question": user_question,
-        "previous_20": previous_chat_context
-    })
+#     # 2. Build prompt
+#     lead_step = get_or_create_lead_state(request.session_id)
+#     final_prompt = prompt.invoke({
+#         "context": context_text,
+#         "question": user_question,
+#         "previous_20": previous_chat_context,
+#         "lead_step": lead_step
+#     })
 
-    # 3. Call LLM
-    try:
-        response = llm.invoke(final_prompt)
-        ai_response = response.content
+#     # 3. Call LLM
+#     try:
+#         response = llm.invoke(final_prompt)
+#         ai_response = response.content
 
-        # Save AI response
-        save_chat(request.session_id, ai_response, "ai")
+#         # Save AI response
+#         save_chat(request.session_id, ai_response, "ai")
 
-        return ChatResponse(answer=ai_response)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+#         return ChatResponse(answer=ai_response)
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 # ---------------------------------------------------
 # RETRIEVE CHATS ENDPOINT
@@ -418,3 +421,15 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 
     save_chat(request.session_id, ai_response, "ai")
     return ChatResponse(answer=ai_response)
+
+
+# ---------------------------------------------------
+# SERVE CHATBOT WIDGET JS
+# ---------------------------------------------------
+CHATBOT_JS_PATH = os.path.join(os.path.dirname(__file__), "chatbot.js")
+
+@app.get("/chatbot.js")
+def serve_chatbot_widget():
+    if not os.path.exists(CHATBOT_JS_PATH):
+        raise HTTPException(status_code=404, detail="chatbot.js not found")
+    return FileResponse(CHATBOT_JS_PATH, media_type="application/javascript")
