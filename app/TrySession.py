@@ -377,11 +377,12 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         request.session_id,
         user_question
     )
+    print(lead_result)
 
     if lead_result["handled"]:
         if lead_result["lead_completed"]:
             lead = fetch_lead_by_session(request.session_id)
-
+            print(lead)
             try:
                 intent_response = predict_intent_api(request.session_id)
                 lead["intent_summary"] = intent_response["intent_summary"]

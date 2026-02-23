@@ -257,6 +257,7 @@
   function clearConversation() {
     conversation = [];
     messagesDiv.innerHTML = "";
+    localStorage.removeItem("cw_session_id");
   }
 
   /* ====================== Typing Indicator ====================== */
