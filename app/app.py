@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import pymysql
@@ -334,3 +335,15 @@ Question: {question}
 @app.get("/health")
 def health_check():
     return {"status": "healthy", "service": "AI Chatbot Backend"}
+
+
+# ---------------------------------------------------
+# SERVE CHATBOT WIDGET JS
+# ---------------------------------------------------
+CHATBOT_JS_PATH = os.path.join(os.path.dirname(__file__), "chatbot.js")
+
+@app.get("/chatbot.js")
+def serve_chatbot_widget():
+    if not os.path.exists(CHATBOT_JS_PATH):
+        raise HTTPException(status_code=404, detail="chatbot.js not found")
+    return FileResponse(CHATBOT_JS_PATH, media_type="application/javascript")
